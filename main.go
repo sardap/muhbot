@@ -15,7 +15,7 @@ import (
 var meRe *regexp.Regexp = regexp.MustCompile("\\b((me|ME)\\s*?)(\\r|\\n|\\.|$)")
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author.ID == s.State.User.ID {
+	if m.Author.ID == s.State.User.ID || m.Author.Bot {
 		return
 	}
 
