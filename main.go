@@ -45,7 +45,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		fmt.Fprintf(&message, "<@%s> ", m.Author.ID)
 		for _, match := range matches {
 			modify := ""
-			if match[8] > 0 {
+			if match[10] > 0 {
 				modify = m.Content[match[10]:match[11]]
 			}
 			target := m.Content[match[8]:match[9]]
