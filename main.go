@@ -13,7 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-var meRe *regexp.Regexp = regexp.MustCompile("\\b((_+?|(me)\\.?(\\x60|\\_+|\\*__|\\*\\*__|\\*\\*\\*__|\\*+|~~|\\_\\_|\\|\\|)?)\\s*?)(\\r|\\n|\\.|$)")
+var meRe *regexp.Regexp = regexp.MustCompile("(\\b|_+)(((me)\\.?(\\x60|_+|\\*+|\\*+_+|~~|\\|\\|)?)\\s*?)(\\r|\\n|\\.|$)")
 
 func reverse(s string) string {
 	runes := []rune(s)
@@ -46,9 +46,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		for _, match := range matches {
 			modify := ""
 			if match[8] > 0 {
-				modify = m.Content[match[8]:match[9]]
+				modify = m.Content[match[10]:match[11]]
 			}
-			target := m.Content[match[6]:match[7]]
+			target := m.Content[match[8]:match[9]]
 			muhStr := "muh"
 			if isUpper(target) {
 				muhStr = strings.ToUpper(muhStr)
