@@ -13,7 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-var meRe *regexp.Regexp = regexp.MustCompile("\\b((_+?(me)\\.?(\\x60|\\_+|\\*__|\\*\\*__|\\*\\*\\*__|\\*+|~~|\\_\\_|\\|\\|)?)\\s*?)(\\r|\\n|\\.|$)")
+var meRe *regexp.Regexp = regexp.MustCompile("\\b((_+?|(me)\\.?(\\x60|\\_+|\\*__|\\*\\*__|\\*\\*\\*__|\\*+|~~|\\_\\_|\\|\\|)?)\\s*?)(\\r|\\n|\\.|$)")
 
 func reverse(s string) string {
 	runes := []rune(s)
