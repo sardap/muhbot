@@ -12,7 +12,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-var meRe *regexp.Regexp = regexp.MustCompile("\\b((me)\\s*?)(\\r|\\n|\\.|$|`)")
+var meRe *regexp.Regexp = regexp.MustCompile("\\b((me)\\s*?)(\\r|\\n|\\.|$|`|(\\*)+|~~|__)")
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID || m.Author.Bot {
