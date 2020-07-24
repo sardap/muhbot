@@ -24,7 +24,7 @@ var (
 )
 
 func init() {
-	meRe = regexp.MustCompile("()(((me)\\.?(\\x60|_+|\\*+|\\*+_+|~~|\\|\\|)?)\\s*?)(\\r|\\n|\\.|$)")
+	meRe = regexp.MustCompile("()(((?P<me>me)(\\.|!|\\?|\"$|'$)?(?P<punc>\\x60|_+|\\*+|\\*+_+|~~|\\|\\|)?(\\.|!|\\?|\"$|'$))\\s*?)(\\r|\\n|\\.|$)")
 
 	redisAddress := os.Getenv("REDIS_ADDRESS")
 	dbNum, err := strconv.Atoi(os.Getenv("REDIS_DB"))
@@ -129,14 +129,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	matches := meRe.FindAllStringSubmatchIndex(strings.ToLower(m.Content), -1)
 	if len(matches) > 0 {
 		var message strings.Builder
-		go logMuh(m.GuildID, m.Author.ID, len(matches))
-
 		message.Grow(len(matches)*4 + len("<@>") + len(m.Author.ID) + 1)
 		fmt.Fprintf(&message, "<@%s> ", m.Author.ID)
 		for _, match := range matches {
 			modify := ""
-			if match[10] > 0 {
-				modify = m.Content[match[10]:match[11]]
+			if match[12] > 0 {
+				modify = m.Content[match[12]:match[13]]
 			}
 			target := m.Content[match[8]:match[9]]
 			muhStr := "muh"
@@ -161,6 +159,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		s.ChannelMessageSend(m.ChannelID, message.String())
+
+		go logMuh(m.GuildID, m.Author.ID, len(matches))
 	} else if commandRe.Match([]byte(m.Content)) {
 		handleCommand(s, m)
 	}
