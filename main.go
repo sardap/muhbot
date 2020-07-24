@@ -24,7 +24,7 @@ var (
 )
 
 func init() {
-	meRe = regexp.MustCompile("()(((?P<me>me)(\\.|!|\\?|\"$|'$)?(?P<punc>\\x60|_+|\\*+|\\*+_+|~~|\\|\\|)?(\\.|!|\\?|\"$|'$))\\s*?)(\\r|\\n|\\.|$)")
+	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[*_~]+)?)\"?'?([.?!\\r\\n\"']|$)")
 
 	redisAddress := os.Getenv("REDIS_ADDRESS")
 	dbNum, err := strconv.Atoi(os.Getenv("REDIS_DB"))
@@ -78,6 +78,57 @@ func logMuh(gID, uID string, n int) {
 	client.IncrBy(userKey(gID, uID), int64(n))
 }
 
+func findGroupIdx(key string, keys []string) int {
+	result := -1
+	for i := 1; i < len(keys); i++ {
+		if keys[i] == key {
+			result = i * 2
+			break
+		}
+	}
+
+	return result
+}
+
+//Muhafier Muhafier
+func Muhafier(message, authorID string, matches [][]int) string {
+	var messageBuilder strings.Builder
+	messageBuilder.Grow(len(matches)*4 + len("<@>") + len(authorID) + 1)
+	fmt.Fprintf(&messageBuilder, "<@%s> ", authorID)
+	keys := meRe.SubexpNames()
+	meGroup := findGroupIdx("me", keys)
+	formGroup := findGroupIdx("form", keys)
+
+	for _, match := range matches {
+		modify := ""
+		if match[formGroup] > 0 {
+			modify = message[match[formGroup]:match[formGroup+1]]
+		}
+		target := message[match[meGroup]:match[meGroup+1]]
+		muhStr := "muh"
+		if isUpper(target) {
+			muhStr = strings.ToUpper(muhStr)
+		} else {
+			if unicode.IsUpper(rune(target[0])) {
+				muhStr = fmt.Sprintf(
+					"%s%s",
+					strings.ToUpper(string(muhStr[0])), muhStr[1:len(muhStr)],
+				)
+			}
+			if unicode.IsUpper(rune(target[len(target)-1])) {
+				muhStr = fmt.Sprintf(
+					"%s%s",
+					muhStr[0:len(muhStr)-1], strings.ToUpper(string(muhStr[len(muhStr)-1])),
+				)
+			}
+		}
+
+		fmt.Fprintf(&messageBuilder, "%s%s%s ", modify, muhStr, reverse(modify))
+	}
+
+	return messageBuilder.String()
+}
+
 func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if regexp.MustCompile(".*?help$").Match([]byte(m.Content)) {
 		s.ChannelMessageSend(
@@ -128,37 +179,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	matches := meRe.FindAllStringSubmatchIndex(strings.ToLower(m.Content), -1)
 	if len(matches) > 0 {
-		var message strings.Builder
-		message.Grow(len(matches)*4 + len("<@>") + len(m.Author.ID) + 1)
-		fmt.Fprintf(&message, "<@%s> ", m.Author.ID)
-		for _, match := range matches {
-			modify := ""
-			if match[12] > 0 {
-				modify = m.Content[match[12]:match[13]]
-			}
-			target := m.Content[match[8]:match[9]]
-			muhStr := "muh"
-			if isUpper(target) {
-				muhStr = strings.ToUpper(muhStr)
-			} else {
-				if unicode.IsUpper(rune(target[0])) {
-					muhStr = fmt.Sprintf(
-						"%s%s",
-						strings.ToUpper(string(muhStr[0])), muhStr[1:len(muhStr)],
-					)
-				}
-				if unicode.IsUpper(rune(target[len(target)-1])) {
-					muhStr = fmt.Sprintf(
-						"%s%s",
-						muhStr[0:len(muhStr)-1], strings.ToUpper(string(muhStr[len(muhStr)-1])),
-					)
-				}
-			}
-
-			fmt.Fprintf(&message, "%s%s%s ", modify, muhStr, reverse(modify))
-		}
-
-		s.ChannelMessageSend(m.ChannelID, message.String())
+		s.ChannelMessageSend(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches))
 
 		go logMuh(m.GuildID, m.Author.ID, len(matches))
 	} else if commandRe.Match([]byte(m.Content)) {
