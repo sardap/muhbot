@@ -1,30 +1,51 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
 
+	speech "cloud.google.com/go/speech/apiv1"
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
+	"github.com/sardap/discgov"
+	speechpb "google.golang.org/genproto/googleapis/cloud/speech/v1"
 )
+
+type guildWatcher struct {
+	activeCh string
+	lock     *sync.Mutex
+	conn     *discordgo.VoiceConnection
+}
+
+type guildInfo struct {
+	data map[string]*guildWatcher
+	lock *sync.Mutex
+}
 
 // NOTE commandRe is set in main
 var (
-	meRe      *regexp.Regexp
-	commandRe *regexp.Regexp
-	client    *redis.Client
+	meRe         *regexp.Regexp
+	commandRe    *regexp.Regexp
+	client       *redis.Client
+	gInfo        *guildInfo
+	gSpeakAPIKey string
 )
 
 func init() {
 	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[*_~]+)?)\"?'?([.?!\\r\\n\"']|$)")
+
+	gSpeakAPIKey = os.Getenv("GOOGLE_SPEECH_API_KEY")
 
 	redisAddress := os.Getenv("REDIS_ADDRESS")
 	dbNum, err := strconv.Atoi(os.Getenv("REDIS_DB"))
@@ -49,6 +70,25 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
+	gInfo = &guildInfo{
+		lock: &sync.Mutex{}, data: make(map[string]*guildWatcher),
+	}
+}
+
+func (g *guildInfo) getGuild(gID string) *guildWatcher {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	result, ok := g.data[gID]
+	if !ok {
+		result = &guildWatcher{
+			lock: &sync.Mutex{},
+		}
+
+		g.data[gID] = result
+	}
+
+	return result
 }
 
 func reverse(s string) string {
@@ -139,6 +179,45 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 				m.Author.ID, s.State.User.ID,
 			),
 		)
+	} else if regexp.MustCompile("hear.*?i").Match([]byte(strings.ToLower(m.Content))) {
+		g, _ := s.State.Guild(m.GuildID)
+
+		targetCh := ""
+		for _, ch := range g.Channels {
+			if ch.Bitrate == 0 {
+				continue
+			}
+
+			for _, uID := range discgov.GetUsers(m.GuildID, ch.ID) {
+				if uID == m.Author.ID {
+					targetCh = ch.ID
+					break
+				}
+			}
+		}
+
+		if targetCh == "" {
+			s.ChannelMessageSend(
+				m.ChannelID,
+				fmt.Sprintf(
+					"<@%s> you must be in a voice channel!\n",
+					m.Author.ID,
+				),
+			)
+			return
+		}
+
+		gV := gInfo.getGuild(m.GuildID)
+		gV.lock.Lock()
+		defer gV.lock.Unlock()
+
+		if gV.conn == nil {
+			gV.conn, _ = s.ChannelVoiceJoin(m.GuildID, targetCh, false, false)
+		} else {
+			gV.conn.ChangeChannel(targetCh, false, false)
+		}
+
+		go listenVoice(gV.conn.OpusRecv)
 	} else if regexp.MustCompile(".*?muh.*?stats$").Match([]byte(m.Content)) {
 		res := client.Get(userKey(m.GuildID, m.Author.ID))
 		if res.Val() == "" {
@@ -180,10 +259,139 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	matches := meRe.FindAllStringSubmatchIndex(strings.ToLower(m.Content), -1)
 	if len(matches) > 0 {
 		s.ChannelMessageSend(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches))
-
 		go logMuh(m.GuildID, m.Author.ID, len(matches))
-	} else if commandRe.Match([]byte(m.Content)) {
+	} else if strings.Contains(m.Content, s.State.User.ID) {
 		handleCommand(s, m)
+	}
+
+	log.Printf("nice")
+}
+
+func listenVoice(ch chan *discordgo.Packet) {
+	ctx := context.Background()
+	c, err := speech.NewClient(ctx)
+	if err != nil {
+		panic(err)
+	}
+	stream, err := c.StreamingRecognize(ctx)
+	if err != nil {
+		panic(err)
+	}
+	req := &speechpb.StreamingRecognizeRequest{
+		StreamingRequest: &speechpb.StreamingRecognizeRequest_StreamingConfig{
+			StreamingConfig: &speechpb.StreamingRecognitionConfig{
+				Config: &speechpb.RecognitionConfig{
+					Encoding:                   speechpb.RecognitionConfig_OGG_OPUS,
+					SampleRateHertz:            16000,
+					AudioChannelCount:          1,
+					LanguageCode:               "en-AU",
+					MaxAlternatives:            10,
+					ProfanityFilter:            false,
+					EnableAutomaticPunctuation: false,
+					UseEnhanced:                false,
+				},
+				InterimResults: true,
+			},
+		},
+	}
+	if err := stream.Send(req); err != nil {
+		panic(err)
+	}
+
+	go func() {
+		// content := make([]byte, 1024)
+		// top := 0
+		count := 0
+		for packet := range ch {
+			log.Printf("Sending new packet %d\n", count)
+			req := &speechpb.StreamingRecognizeRequest{
+				StreamingRequest: &speechpb.StreamingRecognizeRequest_AudioContent{
+					AudioContent: packet.Opus,
+				},
+			}
+			if err := stream.Send(req); err != nil {
+				panic(err)
+			}
+
+			if count > 100 {
+				break
+			}
+
+			count++
+
+			// top = 0
+			// for i := 0; i < len(content); i++ {
+			// 	content[i] = 0
+			// }
+		}
+		stream.CloseSend()
+	}()
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		if err := resp.Error; err != nil {
+			panic(fmt.Errorf("Could not recognize: %v", err))
+		}
+		for _, result := range resp.Results {
+			log.Printf("Result: %+v\n", result)
+		}
+	}
+	log.Printf("closed\n")
+}
+
+func voiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
+	if s.State.User.ID == v.UserID {
+		return
+	}
+
+	discgov.UserVoiceTrackerHandler(s, v)
+
+	return
+
+	g := gInfo.getGuild(v.GuildID)
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	curCount := len(discgov.GetUsers(v.GuildID, g.activeCh))
+
+	if curCount == 0 {
+		g.conn.Disconnect()
+		return
+
+		guild, _ := s.State.Guild(v.GuildID)
+
+		best := 0
+		bestCID := ""
+		for _, ch := range guild.Channels {
+			if ch.Bitrate == 0 {
+				continue
+			}
+
+			count := len(discgov.GetUsers(v.GuildID, ch.ID))
+			if count > best {
+				bestCID = ch.ID
+				best = count
+			}
+		}
+
+		if bestCID != "" {
+			if g.conn == nil {
+				g.conn, _ = s.ChannelVoiceJoin(v.GuildID, v.ChannelID, false, false)
+				g.activeCh = bestCID
+				go listenVoice(g.conn.OpusRecv)
+			} else {
+				g.conn.ChangeChannel(bestCID, false, false)
+			}
+		} else if g.conn != nil {
+			g.conn.Disconnect()
+			close(g.conn.OpusRecv)
+			g.conn = nil
+		}
 	}
 }
 
@@ -196,6 +404,7 @@ func main() {
 	}
 
 	// Register the messageCreate func as a callback for MessageCreate events.
+	discord.AddHandler(voiceStateUpdate)
 	discord.AddHandler(messageCreate)
 
 	// Open a websocket connection to Discord and begin listening.
@@ -205,7 +414,7 @@ func main() {
 		return
 	}
 
-	commandRe = regexp.MustCompile(fmt.Sprintf("<@.%s>", discord.State.User.ID))
+	commandRe = regexp.MustCompile(fmt.Sprintf("<@[&!]?%s>", discord.State.User.ID))
 
 	discord.UpdateStatus(1, "@me help")
 
