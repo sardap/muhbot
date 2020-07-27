@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -15,11 +13,12 @@ import (
 	"time"
 	"unicode"
 
-	speech "cloud.google.com/go/speech/apiv1"
 	"github.com/bwmarrin/discordgo"
+	"github.com/go-audio/audio"
+	"github.com/go-audio/wav"
 	"github.com/go-redis/redis"
 	"github.com/sardap/discgov"
-	speechpb "google.golang.org/genproto/googleapis/cloud/speech/v1"
+	"gopkg.in/hraban/opus.v2"
 )
 
 type guildWatcher struct {
@@ -217,7 +216,7 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 			gV.conn.ChangeChannel(targetCh, false, false)
 		}
 
-		go listenVoice(gV.conn.OpusRecv)
+		go listenVoice(gV.conn, gV.conn.OpusRecv)
 	} else if regexp.MustCompile(".*?muh.*?stats$").Match([]byte(m.Content)) {
 		res := client.Get(userKey(m.GuildID, m.Author.ID))
 		if res.Val() == "" {
@@ -267,81 +266,71 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	log.Printf("nice")
 }
 
-func listenVoice(ch chan *discordgo.Packet) {
-	ctx := context.Background()
-	c, err := speech.NewClient(ctx)
+func listenVoice(conn *discordgo.VoiceConnection, ch chan *discordgo.Packet) {
+	const sampleRate = 48000
+	const channels = 1 // mono; 2 for stereo
+
+	dec, err := opus.NewDecoder(sampleRate, channels)
 	if err != nil {
 		panic(err)
 	}
-	stream, err := c.StreamingRecognize(ctx)
-	if err != nil {
-		panic(err)
-	}
-	req := &speechpb.StreamingRecognizeRequest{
-		StreamingRequest: &speechpb.StreamingRecognizeRequest_StreamingConfig{
-			StreamingConfig: &speechpb.StreamingRecognitionConfig{
-				Config: &speechpb.RecognitionConfig{
-					Encoding:                   speechpb.RecognitionConfig_OGG_OPUS,
-					SampleRateHertz:            16000,
-					AudioChannelCount:          1,
-					LanguageCode:               "en-AU",
-					MaxAlternatives:            10,
-					ProfanityFilter:            false,
-					EnableAutomaticPunctuation: false,
-					UseEnhanced:                false,
-				},
-				InterimResults: true,
-			},
-		},
-	}
-	if err := stream.Send(req); err != nil {
-		panic(err)
-	}
-
-	go func() {
-		// content := make([]byte, 1024)
-		// top := 0
-		count := 0
-		for packet := range ch {
-			log.Printf("Sending new packet %d\n", count)
-			req := &speechpb.StreamingRecognizeRequest{
-				StreamingRequest: &speechpb.StreamingRecognizeRequest_AudioContent{
-					AudioContent: packet.Opus,
-				},
-			}
-			if err := stream.Send(req); err != nil {
-				panic(err)
-			}
-
-			if count > 100 {
-				break
-			}
-
-			count++
-
-			// top = 0
-			// for i := 0; i < len(content); i++ {
-			// 	content[i] = 0
-			// }
-		}
-		stream.CloseSend()
-	}()
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
+	endTime := time.Now().UTC().Add(time.Duration(10) * time.Second)
+	completePCM := make([]int16, 0)
+	for packet := range ch {
+		conn.OpusSend <- packet.Opus
+		if time.Now().UTC().After(endTime) {
 			break
 		}
+
+		log.Printf("new packet buffer size %d\n", len(completePCM))
+
+		var frameSizeMs float32 = 60
+		frameSize := channels * frameSizeMs * sampleRate / 1000
+		pcm := make([]int16, int(frameSize))
+		n, err := dec.Decode(packet.Opus, pcm)
 		if err != nil {
 			panic(err)
 		}
-		if err := resp.Error; err != nil {
-			panic(fmt.Errorf("Could not recognize: %v", err))
-		}
-		for _, result := range resp.Results {
-			log.Printf("Result: %+v\n", result)
+
+		// To get all samples (interleaved if multiple channels):
+		pcm = pcm[:n*channels] // only necessary if you didn't know the right frame size
+
+		// or access sample per sample, directly:
+		for i := 0; i < n; i++ {
+			completePCM = append(completePCM, pcm[i*channels+0])
 		}
 	}
-	log.Printf("closed\n")
+	log.Printf("Closed stream writing to file")
+
+	// Output file.
+	out, err := os.Create("/app/out/output.wav")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	// 8 kHz, 16 bit, 1 channel, WAV.
+	e := wav.NewEncoder(out, sampleRate, 16, 1, 1)
+
+	buf := &audio.IntBuffer{
+		Format: &audio.Format{
+			NumChannels: 1,
+			SampleRate:  sampleRate,
+		},
+	}
+	for _, sample := range completePCM {
+		buf.Data = append(buf.Data, int(sample))
+	}
+
+	// Write buffer to output file. This writes a RIFF header and the PCM chunks from the audio.IntBuffer.
+	if err := e.Write(buf); err != nil {
+		log.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("file created")
 }
 
 func voiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
@@ -351,16 +340,18 @@ func voiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
 
 	discgov.UserVoiceTrackerHandler(s, v)
 
-	return
-
 	g := gInfo.getGuild(v.GuildID)
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
+	if g.conn == nil {
+		return
+	}
+
 	curCount := len(discgov.GetUsers(v.GuildID, g.activeCh))
 
 	if curCount == 0 {
-		g.conn.Disconnect()
+		s.ChannelVoiceJoin(v.GuildID, "", false, false)
 		return
 
 		guild, _ := s.State.Guild(v.GuildID)
@@ -380,13 +371,13 @@ func voiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
 		}
 
 		if bestCID != "" {
-			if g.conn == nil {
-				g.conn, _ = s.ChannelVoiceJoin(v.GuildID, v.ChannelID, false, false)
-				g.activeCh = bestCID
-				go listenVoice(g.conn.OpusRecv)
-			} else {
-				g.conn.ChangeChannel(bestCID, false, false)
-			}
+			// if g.conn == nil {
+			// 	g.conn, _ = s.ChannelVoiceJoin(v.GuildID, v.ChannelID, false, false)
+			// 	g.activeCh = bestCID
+			// 	go listenVoice(g.conn, g.conn.OpusRecv)
+			// } else {
+			// 	g.conn.ChangeChannel(bestCID, false, false)
+			// }
 		} else if g.conn != nil {
 			g.conn.Disconnect()
 			close(g.conn.OpusRecv)
