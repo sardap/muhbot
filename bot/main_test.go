@@ -43,6 +43,7 @@ func TestRegex(t *testing.T) {
 		regCase{"my name is paul", ""},
 		regCase{"game", "muh"},
 		regCase{"game.", "muh"},
+		regCase{"me(me)\nmuh.", "muh"},
 		regCase{"name asdasd", ""},
 		regCase{"none", ""},
 	}

@@ -12,8 +12,9 @@ services:
         - './data:/bitnami/redis/data'
     muh_bot:
       container_name: muh_bot
-      build: . 
+      build: ./bot
       env_file: 
         - '.env'
       volumes:
         - './data:/app/out'  
+        - './data/tmp:/tmp/audio_dump'
