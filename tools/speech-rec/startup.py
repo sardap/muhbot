@@ -5,6 +5,7 @@ import json
 import pytz
 import wave
 import contextlib
+import waitress
 
 import speech_recognition as sr
 from os import path, environ, remove
@@ -99,22 +100,21 @@ def add_play_time(filepath):
 	global total_play_time
 	global quota_day
 
-	duration = 0
+	duration = 15
 	try:
 		with contextlib.closing(wave.open(filepath,'r')) as f:
 			frames = f.getnframes()
 			rate = f.getframerate()
-			duration = frames / float(rate)
+			duration = max(duration, frames / float(rate))
 	finally:
-		# print("removing")
 		remove(filepath)
 
 	play_time_sem.acquire()
 	try:
 		pst_time = get_PST_time()
-		if quota_day.today() != pst_time.today():
+		if quota_day.day != pst_time.day:
 			print("New day in PST time")
-			total_play_time = 0
+			total_play_time = duration
 			quota_day = pst_time
 		else:
 			total_play_time += duration
@@ -131,7 +131,7 @@ def init():
 	load_words()
 	load_play_time()
 
-def say_muh(out):
+def say_muh_google(out):
 	if len(out) == 0:
 		return None
 
@@ -153,17 +153,8 @@ def get_audio_length(out):
 
 	return 0
 
-def check_audio_file(file):
-	if quota_reached():
-		return False
-
-	filepath = path.join(AUDIO_DUMP_PATH, "{}.wav".format(random.random()))
-	file.data.save(filepath)
-
+def google_handler(r, audio, filepath):
 	muh_word = None
-	r = sr.Recognizer()
-	with sr.AudioFile(filepath) as source:
-		audio = r.record(source)  # read the entire audio file
 	try:
 		out = r.recognize_google_cloud(
 			audio,
@@ -174,12 +165,48 @@ def check_audio_file(file):
 		)
 		Thread(target=add_play_time, args=(filepath,)).start()
 
-		muh_word = say_muh(out)
+		muh_word = say_muh_google(out)
 	except sr.UnknownValueError:
 		print("Google Cloud Speech could not understand audio")
 	except sr.RequestError as e:
 		print("Could not request results from Google Cloud Speech service; {0}".format(e))
 
+	return muh_word
+
+def local_handler(r, audio, filepath):
+	muh_word = None
+	# recognize speech using Sphinx
+	try:
+		out = r.recognize_sphinx(
+			audio,
+			language="en-US",
+				# keyword_entries=[("I am me", 0), ("the game", 0)]
+		)
+	
+		for word in out.split():
+			if word in me_words:
+				muh_word = word
+
+	except sr.UnknownValueError:
+		print("Sphinx could not understand audio")
+	except sr.RequestError as e:
+		print("Sphinx error; {0}".format(e))
+
+	return muh_word
+
+def check_audio_file(file):
+	handler = google_handler
+	if quota_reached():
+		handler = local_handler
+
+	filepath = path.join(AUDIO_DUMP_PATH, "{}.wav".format(random.random()))
+	file.data.save(filepath)
+
+	r = sr.Recognizer()
+	with sr.AudioFile(filepath) as source:
+		audio = r.record(source)  # read the entire audio file
+	muh_word = handler(r, audio, filepath)
+	
 	if muh_word == None:
 		print("Word {}".format(muh_word))
 		muh_word = False
@@ -192,48 +219,7 @@ def check_audio_file(file):
 def main():
 	init()
 
-	app.run(host="0.0.0.0", port="5000", threaded=True)
-
-	return 
-	# use the audio file as the audio source
-	r = sr.Recognizer()
-	with sr.AudioFile(AUDIO_FILE) as source:
-		audio = r.record(source)  # read the entire audio file
-	try:
-		out = r.recognize_google_cloud(
-			audio,
-			credentials_json=GOOGLE_CLOUD_SPEECH_CREDENTIALS,
-			language="en-AU",
-			# preferred_phrases="",
-			show_all=True
-		)
-
-		muh_word = say_muh(out)
-		if muh_word == None:
-			muh_word = "Not a me word"
-
-		print("Google Cloud Speech thinks you said: {}".format(muh_word))
-	except sr.UnknownValueError:
-		print("Google Cloud Speech could not understand audio")
-	except sr.RequestError as e:
-		print("Could not request results from Google Cloud Speech service; {0}".format(e))
-
-	return
-
-	# recognize speech using Sphinx
-	try:
-		out = r.recognize_sphinx(
-			audio,
-			language="en-US",
-				# keyword_entries=[("I am me", 0), ("the game", 0)]
-		)
-	
-		print("Sphinx thinks you said: {}".format(out))
-	except sr.UnknownValueError:
-		print("Sphinx could not understand audio")
-	except sr.RequestError as e:
-		print("Sphinx error; {0}".format(e))
-
+	waitress.serve(app, host='0.0.0.0', port="5000")
 
 if __name__ == '__main__':
 	main()

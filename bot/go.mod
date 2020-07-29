@@ -16,6 +16,7 @@ require (
 	github.com/neo4j/neo4j-go-driver v1.8.0 // indirect
 	github.com/nicolaifsf/go-speak v0.0.0-20171126142808-4e8e88231e92
 	github.com/orcaman/concurrent-map v0.0.0-20190826125027-8c72a8bb44f6
+	github.com/orcaman/writerseeker v0.0.0-20200621085525-1d3f536ff85e
 	github.com/pkg/errors v0.9.1
 	github.com/sardap/discgov v0.0.0-20200725235459-f22538ca35ce
 	github.com/xlab/opus-go v0.0.0-20160927191724-e36bd15a5261 // indirect

@@ -40,6 +40,8 @@ func TestRegex(t *testing.T) {
 		regCase{"Me", "Muh"},
 		regCase{"mE", "muH"},
 		regCase{"ME", "MUH"},
+		regCase{"|me|", "|muh|"},
+		regCase{"||***~~ME~~***||", "||***~~MUH~~***||"},
 		regCase{"my name is paul", ""},
 		regCase{"game", "muh"},
 		regCase{"game.", "muh"},

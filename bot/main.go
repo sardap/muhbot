@@ -30,7 +30,7 @@ var (
 )
 
 func init() {
-	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[*_~]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)")
+	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)")
 
 	gSpeakAPIKey = os.Getenv("GOOGLE_SPEECH_API_KEY")
 	audioDumpPath = os.Getenv("AUDIO_DUMP")
@@ -149,11 +149,13 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 			m.ChannelID,
 			fmt.Sprintf(
 				"<@%s> Commands:\n"+
-					"\"<@%s> muh stats\" to show how many times you have said **the** word.",
+					"\"muh$ stats\" to show how many times you have said **the** word.\n"+
+					"\"muh$ hear\" me muh is going to join you in a voice call.\n"+
+					"\"muh$ fuck off\" me muh is going to leave if im in a call.\n",
 				m.Author.ID, s.State.User.ID,
 			),
 		)
-	} else if regexp.MustCompile("hear").Match([]byte(strings.ToLower(m.Content))) {
+	} else if regexp.MustCompile("hear$").Match([]byte(strings.ToLower(m.Content))) {
 		g, _ := s.State.Guild(m.GuildID)
 
 		targetCh := ""
@@ -214,11 +216,26 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 				m.Author.ID, n,
 			),
 		)
+	} else if regexp.MustCompile("fuck.*?off$").Match([]byte(m.Content)) {
+		gV := gInfo.GetGuild(m.GuildID)
+		gV.lock.RLock()
+		defer gV.lock.RUnlock()
+
+		err := gV.DisconnectFromChannel()
+		if err != nil {
+			s.ChannelMessageSend(
+				m.ChannelID,
+				fmt.Sprintf(
+					"<@%s> error:%s.",
+					m.Author.ID, err.Error(),
+				),
+			)
+		}
 	}
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author.ID == s.State.User.ID || m.Author.Bot {
+	if m.Author.ID == s.State.User.ID {
 		return
 	}
 
@@ -251,9 +268,9 @@ func main() {
 		return
 	}
 
-	commandRe = regexp.MustCompile("muh:")
+	commandRe = regexp.MustCompile("muh\\$")
 
-	discord.UpdateStatus(1, "muh: help")
+	discord.UpdateStatus(1, "muh$ help")
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
