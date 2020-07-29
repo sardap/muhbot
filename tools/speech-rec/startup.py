@@ -18,7 +18,8 @@ from threading import BoundedSemaphore, Thread
 
 GOOGLE_CLOUD_SPEECH_CREDENTIALS = environ["GOOGLE_CLOUD_SPEECH_CREDENTIALS"]
 AUDIO_DUMP_PATH = environ["AUDIO_DUMP_PATH"]
-DATA_FILE_PATH = "speech-rec/data.json"
+DATA_FILE_PATH = "data/data.json"
+WORD_DICT_PATH = "tools/speech-rec/top-1000-words.txt"
 
 app = Flask(__name__)
 total_play_time = None
@@ -58,7 +59,7 @@ def get_poop_photo_endpoint():
 	)
 
 def load_words():
-	with open("speech-rec/words_alpha.txt") as word_file:
+	with open(WORD_DICT_PATH) as word_file:
 		words = set(word_file.read().split())
 
 	for word in words:
@@ -105,6 +106,7 @@ def add_play_time(filepath):
 			rate = f.getframerate()
 			duration = frames / float(rate)
 	finally:
+		# print("removing")
 		remove(filepath)
 
 	play_time_sem.acquire()

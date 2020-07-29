@@ -1,19 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
-	"math/rand"
-	"mime/multipart"
-	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,48 +14,19 @@ import (
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/go-audio/audio"
-	"github.com/go-audio/wav"
 	"github.com/go-redis/redis"
-	"github.com/jonas747/dca"
-	"github.com/pkg/errors"
 	"github.com/sardap/discgov"
-	"gopkg.in/hraban/opus.v2"
 )
-
-type muhInfo struct {
-	kill bool
-}
-
-type guildWatcher struct {
-	activeCh string
-	lock     *sync.RWMutex
-	conn     *discordgo.VoiceConnection
-	mCh      chan muhInfo
-}
-
-type guildInfo struct {
-	data map[string]*guildWatcher
-	lock *sync.Mutex
-}
-
-type responseAudioProcessor struct {
-	SayMuh bool `json:"say_muh"`
-}
-
-const sampleRate = 48000
-const channels = 1 // mono; 2 for stereo
 
 // NOTE commandRe is set in main
 var (
 	meRe                   *regexp.Regexp
 	commandRe              *regexp.Regexp
 	client                 *redis.Client
-	gInfo                  *guildInfo
+	gInfo                  *GuildInfo
 	gSpeakAPIKey           string
 	audioDumpPath          string
 	audioProcessorEndpoint string
-	muhFilePath            string
 )
 
 func init() {
@@ -73,7 +35,6 @@ func init() {
 	gSpeakAPIKey = os.Getenv("GOOGLE_SPEECH_API_KEY")
 	audioDumpPath = os.Getenv("AUDIO_DUMP")
 	audioProcessorEndpoint = os.Getenv("AUDIO_PROCESSOR_ENDPOINT")
-	muhFilePath = os.Getenv("MUH_FILE_PATH")
 
 	redisAddress := os.Getenv("REDIS_ADDRESS")
 	dbNum, err := strconv.Atoi(os.Getenv("REDIS_DB"))
@@ -99,264 +60,9 @@ func init() {
 		panic(err)
 	}
 
-	gInfo = &guildInfo{
-		lock: &sync.Mutex{}, data: make(map[string]*guildWatcher),
+	gInfo = &GuildInfo{
+		lock: &sync.Mutex{}, data: make(map[string]*GuildWatcher),
 	}
-}
-
-func (g *guildInfo) getGuild(gID string) *guildWatcher {
-	g.lock.Lock()
-	defer g.lock.Unlock()
-	result, ok := g.data[gID]
-	if !ok {
-		result = &guildWatcher{
-			lock: &sync.RWMutex{}, mCh: make(chan muhInfo),
-		}
-
-		g.data[gID] = result
-	}
-
-	return result
-}
-
-func (g *guildWatcher) sayMuhLister() {
-	playMuh := func() {
-		encodeSession, err := dca.EncodeFile(muhFilePath, dca.StdEncodeOptions)
-		if err != nil {
-			panic(err)
-		}
-		defer encodeSession.Cleanup()
-
-		g.conn.Speaking(true)
-		done := make(chan error)
-		dca.NewStream(encodeSession, g.conn, done)
-		err = <-done
-		if err != nil && err != io.EOF {
-		}
-		g.conn.Speaking(false)
-	}
-
-	for muh := range g.mCh {
-		if muh.kill {
-			return
-		}
-		playMuh()
-	}
-}
-
-func encodeFile(pcm []int16) (string, error) {
-	filename := fmt.Sprintf(
-		"%s.%s",
-		filepath.Join(audioDumpPath, fmt.Sprintf("%d", rand.Int())), "wav",
-	)
-
-	out, err := os.Create(filename)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-
-	// 8 kHz, 16 bit, 1 channel, WAV.
-	e := wav.NewEncoder(out, sampleRate, 16, 1, 1)
-
-	buf := &audio.IntBuffer{
-		Format: &audio.Format{
-			NumChannels: 1,
-			SampleRate:  sampleRate,
-		},
-	}
-	for _, sample := range pcm {
-		buf.Data = append(buf.Data, int(sample))
-	}
-
-	// Write buffer to output file. This writes a RIFF header and the PCM chunks from the audio.IntBuffer.
-	if err := e.Write(buf); err != nil {
-		return "", err
-	}
-	if err := e.Close(); err != nil {
-		return "", err
-	}
-
-	return filename, nil
-}
-
-var errAudioServerProcessing error = errors.New("500 error processing audio")
-
-func sendForProcessing(filename string) (bool, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return false, errors.Wrap(err, "unable to open file")
-	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", filepath.Base(filename))
-	if err != nil {
-		return false, errors.Wrap(err, "unable to add file to body")
-	}
-
-	url := fmt.Sprintf("%s/api/process_audio_file", audioProcessorEndpoint)
-	io.Copy(part, file)
-	writer.Close()
-	request, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return false, errors.Wrap(err, "unable to create request")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(2)*time.Second)
-	defer cancel()
-	request.WithContext(ctx)
-	request.Header.Add("Content-Type", writer.FormDataContentType())
-	client := &http.Client{}
-
-	response, err := client.Do(request)
-	if err != nil {
-		return false, errors.Wrap(err, "unable to make request")
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode == 500 {
-		log.Printf("response %v\n", response)
-		return false, errAudioServerProcessing
-	}
-
-	if response.StatusCode >= 400 && response.StatusCode <= 499 {
-		return false, fmt.Errorf("Cannot load file 400 from server")
-	}
-
-	content, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return false, errors.Wrap(err, fmt.Sprintf("unable read request response %v", response))
-	}
-
-	var data responseAudioProcessor
-	err = json.Unmarshal(content, &data)
-	if err != nil {
-		return false, errors.Wrap(err, fmt.Sprintf("unable unmarsahl request respons e%v", response))
-	}
-
-	return data.SayMuh, nil
-}
-
-func processSample(completePCM []int16, ch chan muhInfo) {
-	filename, err := encodeFile(completePCM)
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(filename)
-
-	sayMuh, err := sendForProcessing(filename)
-	if err != nil {
-		log.Printf("Error fuck you %v\n", err)
-		switch err {
-		case errAudioServerProcessing:
-			log.Printf("500 server error on python server")
-			return
-		default:
-			log.Printf("error processing audio %v", err)
-			return
-		}
-	}
-
-	if sayMuh {
-		ch <- muhInfo{}
-	}
-}
-
-func (g *guildWatcher) listenVoice() {
-	inCh := g.conn.OpusRecv
-	mCh := g.mCh
-
-	dec, err := opus.NewDecoder(sampleRate, channels)
-	if err != nil {
-		panic(err)
-	}
-
-	for {
-		completePCM := make([]int16, 0)
-		expireTime := time.Now().UTC().Add(time.Duration(5) * time.Second)
-		audioTime := time.Duration(0)
-		emptyCount := 0
-		for {
-			sendAudio := false
-			if time.Now().UTC().After(expireTime) {
-				sendAudio = true
-			}
-
-			var frameSizeMs float32 = 60
-			frameSize := channels * frameSizeMs * sampleRate / 1000
-			select {
-			case packet := <-inCh:
-				log.Printf(
-					"Packet SSRC:%d Sequence:%d timestamp:%d \n",
-					packet.SSRC, packet.Sequence, packet.Timestamp,
-				)
-				emptyCount = 0
-				audioTime += time.Duration(60) * time.Millisecond
-				pcm := make([]int16, int(frameSize))
-				n, err := dec.Decode(packet.Opus, pcm)
-				if err != nil {
-					log.Printf("error:%v\n", err)
-					break
-				}
-
-				// To get all samples (interleaved if multiple channels):
-				pcm = pcm[:n*channels] // only necessary if you didn't know the right frame size
-
-				// or access sample per sample, directly:
-				for i := 0; i < n; i++ {
-					completePCM = append(completePCM, pcm[i*channels+0])
-				}
-			case <-time.After(time.Duration(60) * time.Millisecond):
-				emptyCount++
-				if emptyCount > 10 {
-					sendAudio = true
-				} else {
-					// for i := 0; i < 960; i++ {
-					// 	completePCM = append(completePCM, 0)
-					// }
-				}
-			}
-
-			if sendAudio {
-				if audioTime > time.Duration(500)*time.Millisecond {
-					go processSample(completePCM, mCh)
-				}
-				break
-			}
-		}
-	}
-}
-
-//ConnectToChannel ConnectToChannel
-func (g *guildWatcher) ConnectToChannel(s *discordgo.Session, guildID, targetChannel string) error {
-	g.lock.RLock()
-	defer g.lock.RUnlock()
-	if g.conn != nil {
-		g.DisconnectFromChannel()
-	}
-
-	g.mCh = make(chan muhInfo)
-	g.activeCh = targetChannel
-	var err error
-	g.conn, err = s.ChannelVoiceJoin(guildID, g.activeCh, false, false)
-	if err != nil {
-		return err
-	}
-	go g.sayMuhLister()
-	go g.listenVoice()
-
-	return nil
-}
-
-func (g *guildWatcher) DisconnectFromChannel() error {
-	g.lock.RLock()
-	defer g.lock.RUnlock()
-	close(g.mCh)
-	err := g.conn.Disconnect()
-	g.conn = nil
-	return err
 }
 
 func reverse(s string) string {
@@ -475,7 +181,7 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		gV := gInfo.getGuild(m.GuildID)
+		gV := gInfo.GetGuild(m.GuildID)
 		gV.ConnectToChannel(s, m.GuildID, targetCh)
 
 	} else if regexp.MustCompile("stats$").Match([]byte(m.Content)) {
@@ -526,59 +232,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
-func voiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
-	if s.State.User.ID == v.UserID {
-		return
-	}
-
-	discgov.UserVoiceTrackerHandler(s, v)
-
-	g := gInfo.getGuild(v.GuildID)
-	g.lock.Lock()
-	defer g.lock.Unlock()
-
-	if g.conn == nil {
-		return
-	}
-
-	curCount := len(discgov.GetUsers(v.GuildID, g.activeCh))
-
-	if curCount == 0 {
-		s.ChannelVoiceJoin(v.GuildID, "", false, false)
-		return
-
-		guild, _ := s.State.Guild(v.GuildID)
-
-		best := 0
-		bestCID := ""
-		for _, ch := range guild.Channels {
-			if ch.Bitrate == 0 {
-				continue
-			}
-
-			count := len(discgov.GetUsers(v.GuildID, ch.ID))
-			if count > best {
-				bestCID = ch.ID
-				best = count
-			}
-		}
-
-		if bestCID != "" {
-			// if g.conn == nil {
-			// 	g.conn, _ = s.ChannelVoiceJoin(v.GuildID, v.ChannelID, false, false)
-			// 	g.activeCh = bestCID
-			// 	go listenVoice(g.conn, g.conn.OpusRecv)
-			// } else {
-			// 	g.conn.ChangeChannel(bestCID, false, false)
-			// }
-		} else if g.conn != nil {
-			g.conn.Disconnect()
-			close(g.conn.OpusRecv)
-			g.conn = nil
-		}
-	}
-}
-
 func main() {
 	token := strings.Replace(os.Getenv("DISCORD_AUTH"), "\"", "", -1)
 	discord, err := discordgo.New("Bot " + token)
@@ -588,7 +241,7 @@ func main() {
 	}
 
 	// Register the messageCreate func as a callback for MessageCreate events.
-	discord.AddHandler(voiceStateUpdate)
+	discord.AddHandler(VoiceStateUpdate)
 	discord.AddHandler(messageCreate)
 
 	// Open a websocket connection to Discord and begin listening.
