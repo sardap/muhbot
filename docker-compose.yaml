@@ -10,11 +10,27 @@ services:
         - '6379:6379'
       volumes:
         - './data:/bitnami/redis/data'
+
+    speech_rect_server:
+      container_name: speech_rect_server
+      build: ./tools/speech-rec
+      environment: 
+        - GOOGLE_CLOUD_SPEECH_CREDENTIALS=${GOOGLE_CLOUD_SPEECH_CREDENTIALS}
+      volumes:
+        - './data:/usr/src/app/data/'
+      ports:
+        - 5000:5000
+      restart: always
+
     muh_bot:
+      depends_on:
+        - speech_rect_server
       container_name: muh_bot
       build: ./bot
-      env_file: 
-        - '.env'
+      environment: 
+        - DISCORD_AUTH=${DISCORD_AUTH}
+        - REDIS_ADDRESS=${REDIS_ADDRESS}
+        - REDIS_DB=${REDIS_DB}
+        - AUDIO_PROCESSOR_ENDPOINT=http://140.140.140.30:5000
       volumes:
-        - './data:/app/out'  
-        - './data/tmp:/tmp/audio_dump'
+        - './data:/app/out'

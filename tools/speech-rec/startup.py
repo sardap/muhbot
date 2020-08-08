@@ -5,7 +5,6 @@ import json
 import pytz
 import wave
 import contextlib
-import waitress
 
 import speech_recognition as sr
 from os import path, environ, remove
@@ -19,8 +18,8 @@ from threading import BoundedSemaphore, Thread
 
 GOOGLE_CLOUD_SPEECH_CREDENTIALS = environ["GOOGLE_CLOUD_SPEECH_CREDENTIALS"]
 AUDIO_DUMP_PATH = environ["AUDIO_DUMP_PATH"]
-DATA_FILE_PATH = "data/data.json"
-WORD_DICT_PATH = "tools/speech-rec/top-1000-words.txt"
+DATA_FILE_PATH = environ["DATA_FILE_PATH"] 
+WORD_DICT_PATH = environ["WORD_DICT_PATH"]
 
 app = Flask(__name__)
 total_play_time = None
@@ -32,8 +31,7 @@ me_words = []
 class ProcessAudioFile(Form):
 	file = FileField(
 		'file',
-		[
-		]
+		[]
 	)
 
 @app.route('/api/process_audio_file', methods=["POST"])
@@ -112,7 +110,7 @@ def add_play_time(filepath):
 	play_time_sem.acquire()
 	try:
 		pst_time = get_PST_time()
-		if quota_day.day != pst_time.day:
+		if quota_day.month != pst_time.month:
 			print("New day in PST time")
 			total_play_time = duration
 			quota_day = pst_time
@@ -216,11 +214,7 @@ def check_audio_file(file):
 
 	return muh_word
 
-def main():
-	init()
-
-	waitress.serve(app, host='0.0.0.0', port="5000")
+init()
 
 if __name__ == '__main__':
-	main()
-	
+	app.run(host='0.0.0.0', port="5000")

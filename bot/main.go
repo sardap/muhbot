@@ -152,7 +152,7 @@ func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
 					"\"muh$ stats\" to show how many times you have said **the** word.\n"+
 					"\"muh$ hear\" me muh is going to join you in a voice call.\n"+
 					"\"muh$ fuck off\" me muh is going to leave if im in a call.\n",
-				m.Author.ID, s.State.User.ID,
+				m.Author.ID,
 			),
 		)
 	} else if regexp.MustCompile("hear$").Match([]byte(strings.ToLower(m.Content))) {
@@ -270,7 +270,7 @@ func main() {
 
 	commandRe = regexp.MustCompile("muh\\$")
 
-	discord.UpdateStatus(1, "muh$ help")
+	discord.UpdateStatus(1, "I can hear now! Try \"muh$ hear\"")
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")

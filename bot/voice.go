@@ -121,8 +121,8 @@ func (g *GuildWatcher) encodeConsumer(ctx context.Context) {
 			for _, sample := range toEn.pcm {
 				completePCM = append(completePCM, sample)
 			}
+
 			length += toEn.length
-			log.Printf("Length: %d", length)
 			if length > time.Duration(16)*time.Second {
 				go processSample(completePCM, g.mCh)
 				completePCM = make([]int16, 0)
@@ -301,7 +301,7 @@ func (g *GuildWatcher) listenVoice(ctx context.Context) {
 			// log.Printf("time %v, empty:%d\n", v.time, v.emptyCount)
 			if v.time > time.Duration(5)*time.Second || v.emptyCount > 20 {
 				log.Printf("sending %v\n", k)
-				if ctx.Err() != nil {
+				if ctx.Err() == nil {
 					g.enCh <- encoderInfo{v.pcm, v.time}
 				}
 				deleteQueue = append(deleteQueue, k)
@@ -329,7 +329,7 @@ func (g *GuildWatcher) ConnectToChannel(s *discordgo.Session, guildID, targetCha
 	}
 	g.conn.AddHandler(voiceStatusUpdate)
 	g.mCh = make(chan muhInfo)
-	g.enCh = make(chan encoderInfo, 5)
+	g.enCh = make(chan encoderInfo)
 	g.activeCh = targetChannel
 
 	var ctx context.Context
