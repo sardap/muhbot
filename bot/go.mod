@@ -5,7 +5,7 @@ go 1.14
 require (
 	cloud.google.com/go v0.56.0
 	cloud.google.com/go/storage v1.6.0
-	github.com/bwmarrin/discordgo v0.21.1
+	github.com/bwmarrin/discordgo v0.22.0
 	github.com/cryptix/wav v0.0.0-20180415113528-8bdace674401
 	github.com/go-audio/audio v1.0.0
 	github.com/go-audio/wav v1.0.0
@@ -19,6 +19,7 @@ require (
 	github.com/orcaman/writerseeker v0.0.0-20200621085525-1d3f536ff85e
 	github.com/pkg/errors v0.9.1
 	github.com/sardap/discgov v0.0.0-20200725235459-f22538ca35ce
+	github.com/sardap/discom v0.0.0-20200810210059-6b1fc7e528fb
 	github.com/xlab/opus-go v0.0.0-20160927191724-e36bd15a5261 // indirect
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	google.golang.org/api v0.29.0

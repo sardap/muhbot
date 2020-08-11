@@ -16,12 +16,13 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
 	"github.com/sardap/discgov"
+	"github.com/sardap/discom"
 )
 
 // NOTE commandRe is set in main
 var (
 	meRe                   *regexp.Regexp
-	commandRe              *regexp.Regexp
+	commandSet             *discom.CommandSet
 	client                 *redis.Client
 	gInfo                  *GuildInfo
 	gSpeakAPIKey           string
@@ -62,6 +63,32 @@ func init() {
 
 	gInfo = &GuildInfo{
 		lock: &sync.Mutex{}, data: make(map[string]*GuildWatcher),
+	}
+
+	commandSet = discom.CreateCommandSet(false, regexp.MustCompile("\\$muh\\$"))
+
+	err = commandSet.AddCommand(discom.Command{
+		Re: regexp.MustCompile("hear"), Handler: hearCommand,
+		Description: "will join your voice channel and say muh when you say me.",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = commandSet.AddCommand(discom.Command{
+		Re: regexp.MustCompile("fuck off"), Handler: leaveCommand,
+		Description: "will leave if it's hearing you.",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = commandSet.AddCommand(discom.Command{
+		Re: regexp.MustCompile("stats"), Handler: statsCommand,
+		Description: "will show how many times you have said me on this server",
+	})
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -143,94 +170,84 @@ func Muhafier(message, authorID string, matches [][]int) string {
 	return messageBuilder.String()
 }
 
-func handleCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if regexp.MustCompile(".*?help$").Match([]byte(m.Content)) {
+func hearCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
+	g, _ := s.State.Guild(m.GuildID)
+
+	targetCh := ""
+	for _, ch := range g.Channels {
+		if ch.Bitrate == 0 {
+			continue
+		}
+
+		for _, uID := range discgov.GetUsers(m.GuildID, ch.ID) {
+			if uID == m.Author.ID {
+				targetCh = ch.ID
+				break
+			}
+		}
+	}
+
+	if targetCh == "" {
 		s.ChannelMessageSend(
 			m.ChannelID,
 			fmt.Sprintf(
-				"<@%s> Commands:\n"+
-					"\"muh$ stats\" to show how many times you have said **the** word.\n"+
-					"\"muh$ hear\" me muh is going to join you in a voice call.\n"+
-					"\"muh$ fuck off\" me muh is going to leave if im in a call.\n",
+				"<@%s> you must be in a voice channel!\n",
 				m.Author.ID,
 			),
 		)
-	} else if regexp.MustCompile("hear$").Match([]byte(strings.ToLower(m.Content))) {
-		g, _ := s.State.Guild(m.GuildID)
+		return
+	}
 
-		targetCh := ""
-		for _, ch := range g.Channels {
-			if ch.Bitrate == 0 {
-				continue
-			}
+	gV := gInfo.GetGuild(m.GuildID)
+	gV.ConnectToChannel(s, m.GuildID, targetCh)
+}
 
-			for _, uID := range discgov.GetUsers(m.GuildID, ch.ID) {
-				if uID == m.Author.ID {
-					targetCh = ch.ID
-					break
-				}
-			}
-		}
-
-		if targetCh == "" {
-			s.ChannelMessageSend(
-				m.ChannelID,
-				fmt.Sprintf(
-					"<@%s> you must be in a voice channel!\n",
-					m.Author.ID,
-				),
-			)
-			return
-		}
-
-		gV := gInfo.GetGuild(m.GuildID)
-		gV.ConnectToChannel(s, m.GuildID, targetCh)
-
-	} else if regexp.MustCompile("stats$").Match([]byte(m.Content)) {
-		res := client.Get(userKey(m.GuildID, m.Author.ID))
-		if res.Val() == "" {
-			s.ChannelMessageSend(
-				m.ChannelID,
-				fmt.Sprintf(
-					"<@%s> you have never **the** word since I started writing it down.",
-					m.Author.ID,
-				),
-			)
-			return
-		}
-
-		n, err := strconv.Atoi(res.Val())
-		if err != nil {
-			s.ChannelMessageSend(
-				m.ChannelID,
-				fmt.Sprintf("<@%s> Sever error tell paul.", m.Author.ID),
-			)
-			log.Printf("error getting data from DB %v\n", err)
-			return
-		}
-
+func statsCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
+	res := client.Get(userKey(m.GuildID, m.Author.ID))
+	if res.Val() == "" {
 		s.ChannelMessageSend(
 			m.ChannelID,
 			fmt.Sprintf(
-				"<@%s> you have said **the** word %d times (since I started writing it down).",
-				m.Author.ID, n,
+				"<@%s> you have never **the** word since I started writing it down.",
+				m.Author.ID,
 			),
 		)
-	} else if regexp.MustCompile("fuck.*?off$").Match([]byte(m.Content)) {
-		gV := gInfo.GetGuild(m.GuildID)
-		gV.lock.RLock()
-		defer gV.lock.RUnlock()
+		return
+	}
 
-		err := gV.DisconnectFromChannel()
-		if err != nil {
-			s.ChannelMessageSend(
-				m.ChannelID,
-				fmt.Sprintf(
-					"<@%s> error:%s.",
-					m.Author.ID, err.Error(),
-				),
-			)
-		}
+	n, err := strconv.Atoi(res.Val())
+	if err != nil {
+		s.ChannelMessageSend(
+			m.ChannelID,
+			fmt.Sprintf("<@%s> Sever error tell paul.", m.Author.ID),
+		)
+		log.Printf("error getting data from DB %v\n", err)
+		return
+	}
+
+	s.ChannelMessageSend(
+		m.ChannelID,
+		fmt.Sprintf(
+			"<@%s> you have said **the** word %d times (since I started writing it down).",
+			m.Author.ID, n,
+		),
+	)
+}
+
+func leaveCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
+	gV := gInfo.GetGuild(m.GuildID)
+	gV.lock.RLock()
+	defer gV.lock.RUnlock()
+
+	err := gV.DisconnectFromChannel()
+	if err != nil {
+		s.ChannelMessageSend(
+			m.ChannelID,
+			fmt.Sprintf(
+				"<@%s> error:%s.",
+				m.Author.ID, err.Error(),
+			),
+		)
 	}
 }
 
@@ -239,13 +256,10 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	log.Printf("ID: %s Message: %s\n", s.State.User.ID, m.Content)
 	matches := meRe.FindAllStringSubmatchIndex(strings.ToLower(m.Content), -1)
 	if len(matches) > 0 {
 		s.ChannelMessageSend(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches))
 		go logMuh(m.GuildID, m.Author.ID, len(matches))
-	} else if commandRe.Match([]byte(m.Content)) {
-		handleCommand(s, m)
 	}
 }
 
@@ -260,6 +274,7 @@ func main() {
 	// Register the messageCreate func as a callback for MessageCreate events.
 	discord.AddHandler(VoiceStateUpdate)
 	discord.AddHandler(messageCreate)
+	discord.AddHandler(commandSet.Handler)
 
 	// Open a websocket connection to Discord and begin listening.
 	err = discord.Open()
@@ -268,9 +283,7 @@ func main() {
 		return
 	}
 
-	commandRe = regexp.MustCompile("muh\\$")
-
-	discord.UpdateStatus(1, "I can hear now! Try \"muh$ hear\"")
+	discord.UpdateStatus(1, "\"muh$ help\"")
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")

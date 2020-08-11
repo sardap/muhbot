@@ -27,7 +27,7 @@ services:
         - speech_rect_server
       container_name: muh_bot
       build: ./bot
-      environment: 
+      environment:
         - DISCORD_AUTH=${DISCORD_AUTH}
         - REDIS_ADDRESS=${REDIS_ADDRESS}
         - REDIS_DB=${REDIS_DB}
