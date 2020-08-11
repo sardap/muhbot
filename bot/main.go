@@ -283,7 +283,7 @@ func main() {
 		return
 	}
 
-	discord.UpdateStatus(1, "\"muh$ help\"")
+	discord.UpdateStatus(1, "\"$muh$ help\"")
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
