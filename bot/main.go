@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 // NOTE commandRe is set in main
 var (
 	meRe                   *regexp.Regexp
+	brokenRe               *regexp.Regexp
 	commandSet             *discom.CommandSet
 	client                 *redis.Client
 	gInfo                  *GuildInfo
@@ -31,7 +33,8 @@ var (
 )
 
 func init() {
-	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)")
+	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[\x60*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)")
+	brokenRe = regexp.MustCompile("broken bot smh")
 
 	gSpeakAPIKey = os.Getenv("GOOGLE_SPEECH_API_KEY")
 	audioDumpPath = os.Getenv("AUDIO_DUMP")
@@ -260,6 +263,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if len(matches) > 0 {
 		s.ChannelMessageSend(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches))
 		go logMuh(m.GuildID, m.Author.ID, len(matches))
+	}
+
+	if m.Author.ID == "158496062103879681" && brokenRe.Match([]byte(strings.ToLower(m.Content))) {
+		if rand.Intn(1000) == 999 {
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@158496062103879681>, where's the DOTA bot?"))
+		} else {
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@158496062103879681>, you are the one who's broken"))
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ RUN apt-get update && apt-get -y install libopus-dev libopusfile-dev
 WORKDIR /app
 COPY go.mod .
 COPY go.sum .
+RUN go mod download
 COPY main.go .
 COPY voice.go .
 RUN go build -o main .
