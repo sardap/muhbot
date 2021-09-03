@@ -9,36 +9,30 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
-	"github.com/sardap/discgov"
 	"github.com/sardap/discom"
 )
+
+const MePattern = "(?P<me>me)(([.?!]|$)?(?P<form>[\x60*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)"
 
 // NOTE commandRe is set in main
 var (
 	meRe                   *regexp.Regexp
 	brokenRe               *regexp.Regexp
-	commandSet             *discom.CommandSet
 	client                 *redis.Client
-	gInfo                  *GuildInfo
 	gSpeakAPIKey           string
 	audioDumpPath          string
 	audioProcessorEndpoint string
 )
 
 func init() {
-	meRe = regexp.MustCompile("(?P<me>me)(([.?!]|$)?(?P<form>[\x60*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)")
+	meRe = regexp.MustCompile(MePattern)
 	brokenRe = regexp.MustCompile("broken bot smh")
-
-	gSpeakAPIKey = os.Getenv("GOOGLE_SPEECH_API_KEY")
-	audioDumpPath = os.Getenv("AUDIO_DUMP")
-	audioProcessorEndpoint = os.Getenv("AUDIO_PROCESSOR_ENDPOINT")
 
 	redisAddress := os.Getenv("REDIS_ADDRESS")
 	dbNum, err := strconv.Atoi(os.Getenv("REDIS_DB"))
@@ -63,36 +57,15 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+}
 
-	gInfo = &GuildInfo{
-		lock: &sync.Mutex{}, data: make(map[string]*GuildWatcher),
-	}
-
-	commandSet = discom.CreateCommandSet(false, regexp.MustCompile("\\$muh\\$"))
-
-	err = commandSet.AddCommand(discom.Command{
-		Re: regexp.MustCompile("hear"), Handler: hearCommand,
-		Description: "will join your voice channel and say muh when you say me.",
+func errorHandler(s *discordgo.Session, i discom.Interaction, err error) {
+	i.Respond(s, discom.Response{
+		Content: fmt.Sprintf(
+			"invalid command:\"%s\" error:%s",
+			i.GetPayload().Message, err,
+		),
 	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = commandSet.AddCommand(discom.Command{
-		Re: regexp.MustCompile("fuck off"), Handler: leaveCommand,
-		Description: "will leave if it's hearing you.",
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = commandSet.AddCommand(discom.Command{
-		Re: regexp.MustCompile("stats"), Handler: statsCommand,
-		Description: "will show how many times you have said me on this server",
-	})
-	if err != nil {
-		panic(err)
-	}
 }
 
 func reverse(s string) string {
@@ -137,8 +110,7 @@ func findGroupIdx(key string, keys []string) int {
 //Muhafier Muhafier
 func Muhafier(message, authorID string, matches [][]int) string {
 	var messageBuilder strings.Builder
-	messageBuilder.Grow(len(matches)*4 + len("<@>") + len(authorID) + 1)
-	fmt.Fprintf(&messageBuilder, "<@%s> ", authorID)
+	messageBuilder.Grow(len(matches) * 4)
 	keys := meRe.SubexpNames()
 	meGroup := findGroupIdx("me", keys)
 	formGroup := findGroupIdx("form", keys)
@@ -156,7 +128,7 @@ func Muhafier(message, authorID string, matches [][]int) string {
 			if unicode.IsUpper(rune(target[0])) {
 				muhStr = fmt.Sprintf(
 					"%s%s",
-					strings.ToUpper(string(muhStr[0])), muhStr[1:len(muhStr)],
+					strings.ToUpper(string(muhStr[0])), muhStr[1:],
 				)
 			}
 			if unicode.IsUpper(rune(target[len(target)-1])) {
@@ -173,85 +145,33 @@ func Muhafier(message, authorID string, matches [][]int) string {
 	return messageBuilder.String()
 }
 
-func hearCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	g, _ := s.State.Guild(m.GuildID)
+func statsCommand(s *discordgo.Session, i discom.Interaction) error {
+	i.Respond(s, discom.Response{
+		Content: "processing",
+	})
 
-	targetCh := ""
-	for _, ch := range g.Channels {
-		if ch.Bitrate == 0 {
-			continue
-		}
-
-		for _, uID := range discgov.GetUsers(m.GuildID, ch.ID) {
-			if uID == m.Author.ID {
-				targetCh = ch.ID
-				break
-			}
-		}
-	}
-
-	if targetCh == "" {
-		s.ChannelMessageSend(
-			m.ChannelID,
-			fmt.Sprintf(
-				"<@%s> you must be in a voice channel!\n",
-				m.Author.ID,
-			),
-		)
-		return
-	}
-
-	gV := gInfo.GetGuild(m.GuildID)
-	gV.ConnectToChannel(s, m.GuildID, targetCh)
-}
-
-func statsCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	res := client.Get(userKey(m.GuildID, m.Author.ID))
+	res := client.Get(userKey(i.GetPayload().GuildId, i.GetPayload().AuthorId))
 	if res.Val() == "" {
-		s.ChannelMessageSend(
-			m.ChannelID,
-			fmt.Sprintf(
-				"<@%s> you have never **the** word since I started writing it down.",
-				m.Author.ID,
-			),
-		)
-		return
+		i.Respond(s, discom.Response{
+			Content: "you have never **the** word since I started writing it down.",
+		})
+		return nil
 	}
 
 	n, err := strconv.Atoi(res.Val())
 	if err != nil {
-		s.ChannelMessageSend(
-			m.ChannelID,
-			fmt.Sprintf("<@%s> Sever error tell paul.", m.Author.ID),
-		)
 		log.Printf("error getting data from DB %v\n", err)
-		return
+		return err
 	}
 
-	s.ChannelMessageSend(
-		m.ChannelID,
-		fmt.Sprintf(
-			"<@%s> you have said **the** word %d times (since I started writing it down).",
-			m.Author.ID, n,
+	i.Respond(s, discom.Response{
+		Content: fmt.Sprintf(
+			"you have said **the** word %d times (since I started writing it down)",
+			n,
 		),
-	)
-}
+	})
 
-func leaveCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	gV := gInfo.GetGuild(m.GuildID)
-	gV.lock.RLock()
-	defer gV.lock.RUnlock()
-
-	err := gV.DisconnectFromChannel()
-	if err != nil {
-		s.ChannelMessageSend(
-			m.ChannelID,
-			fmt.Sprintf(
-				"<@%s> error:%s.",
-				m.Author.ID, err.Error(),
-			),
-		)
-	}
+	return nil
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -261,7 +181,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	matches := meRe.FindAllStringSubmatchIndex(strings.ToLower(m.Content), -1)
 	if len(matches) > 0 {
-		s.ChannelMessageSend(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches))
+		s.ChannelMessageSendReply(m.ChannelID, Muhafier(m.Content, m.Author.ID, matches), m.Reference())
 		go logMuh(m.GuildID, m.Author.ID, len(matches))
 	}
 
@@ -282,27 +202,39 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Register the messageCreate func as a callback for MessageCreate events.
-	discord.AddHandler(VoiceStateUpdate)
-	discord.AddHandler(messageCreate)
-	discord.AddHandler(commandSet.Handler)
-
-	// Open a websocket connection to Discord and begin listening.
-	err = discord.Open()
+	commandSet, _ := discom.CreateCommandSet("-muh", errorHandler)
+	commandSet.AddCommand(discom.Command{
+		Name:        "stats",
+		Handler:     statsCommand,
+		Description: "get muh stats",
+	})
 	if err != nil {
-		fmt.Println("error opening connection,", err)
-		return
+		panic(err)
 	}
 
-	discord.UpdateStatus(1, "\"$muh$ help\"")
+	// Register the messageCreate func as a callback for MessageCreate events.
+	discord.AddHandler(messageCreate)
+
+	// Register the messageCreate func as a callback for MessageCreate events.
+	discord.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		s.UpdateListeningStatus("try -muh or slash commands help")
+		log.Println("Bot is up!")
+	})
+
+	discord.AddHandler(commandSet.Handler)
+	discord.AddHandler(commandSet.IntreactionHandler)
+
+	// Open a websocket connection to Discord and begin listening.
+	if err := discord.Open(); err != nil {
+		log.Fatal("error opening connection,", err)
+	}
+	defer discord.Close()
+
+	commandSet.SyncAppCommands(discord)
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
 	<-sc
-
-	// Cleanly close down the Discord session.
-	discord.Close()
-
 }
