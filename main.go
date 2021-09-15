@@ -18,7 +18,7 @@ import (
 	"github.com/sardap/discom"
 )
 
-const MePattern = "(?P<me>me)(([.?!]|$)?(?P<form>[\x60*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)"
+const MePattern = "(?P<me>(me)|(13 5))(([.?!]|$)?(?P<form>[\x60*_~|]+)?)\"?'?\\)?([.?!\\r\\n\"']|$)"
 
 // NOTE commandRe is set in main
 var (
@@ -121,25 +121,40 @@ func Muhafier(message, authorID string, matches [][]int) string {
 			modify = message[match[formGroup]:match[formGroup+1]]
 		}
 		target := message[match[meGroup]:match[meGroup+1]]
-		muhStr := "muh"
+
+		fmt.Printf("%s\n", target)
+		var muhStr string
+		var wackyMuhStr string
+		if strings.ToLower(target) == "me" {
+			muhStr = "muh"
+			wackyMuhStr = "13 21 8"
+		} else {
+			muhStr = "13 21 8"
+			wackyMuhStr = "muh"
+		}
+
+		activeMuhStr := muhStr
+		if rand.Int()%1000 == 0 {
+			activeMuhStr = wackyMuhStr
+		}
 		if isUpper(target) {
-			muhStr = strings.ToUpper(muhStr)
+			activeMuhStr = strings.ToUpper(activeMuhStr)
 		} else {
 			if unicode.IsUpper(rune(target[0])) {
-				muhStr = fmt.Sprintf(
+				activeMuhStr = fmt.Sprintf(
 					"%s%s",
-					strings.ToUpper(string(muhStr[0])), muhStr[1:],
+					strings.ToUpper(string(activeMuhStr[0])), activeMuhStr[1:],
 				)
 			}
 			if unicode.IsUpper(rune(target[len(target)-1])) {
-				muhStr = fmt.Sprintf(
+				activeMuhStr = fmt.Sprintf(
 					"%s%s",
-					muhStr[0:len(muhStr)-1], strings.ToUpper(string(muhStr[len(muhStr)-1])),
+					activeMuhStr[0:len(activeMuhStr)-1], strings.ToUpper(string(activeMuhStr[len(activeMuhStr)-1])),
 				)
 			}
 		}
 
-		fmt.Fprintf(&messageBuilder, "%s%s%s ", modify, muhStr, reverse(modify))
+		fmt.Fprintf(&messageBuilder, "%s%s%s ", modify, activeMuhStr, reverse(modify))
 	}
 
 	return messageBuilder.String()
