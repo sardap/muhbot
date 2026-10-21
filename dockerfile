@@ -1,4 +1,4 @@
-FROM golang:tip-alpine3.22 as builder
+FROM golang:latest AS builder
 
 WORKDIR /app
 COPY go.mod .
@@ -8,7 +8,7 @@ COPY main.go .
 RUN go build -o main .
 
 # Backend
-FROM alpine:3.22.2
+FROM alpine:latest
 
 WORKDIR /app
 COPY --from=builder /app/main main

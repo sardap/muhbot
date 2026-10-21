@@ -1,6 +1,6 @@
 module github.com/sardap/muhbot
 
-go 1.24
+go 1.27
 
 require (
 	github.com/bwmarrin/discordgo v0.23.3-0.20210627161652-421e14965030
